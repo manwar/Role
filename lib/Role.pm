@@ -20,6 +20,8 @@ my %REQUIRED_METHODS;
 my %IS_ROLE;
 my %EXCLUDED_ROLES;
 my %APPLIED_ROLES;
+# Store method aliases for applied roles: $METHOD_ALIASES{Class}{Role} = { original_method => alias_method, ... }
+my %METHOD_ALIASES;
 
 =head1 SYNOPSIS
 
@@ -278,28 +280,70 @@ sub _export_with {
     *{"${caller}::with"} = \&with unless (defined &{"${caller}::with"});
 }
 
+# Updated to support a list of roles or a hashref for roles with aliases
 sub with {
     my (@roles) = @_;
 
     my $caller    = caller;
+
+    # Process roles into a clean list of role names and a structure for aliases
+    my ($clean_roles_ref, $aliases_by_role) = _process_role_arguments(@roles);
+
+    # Store aliases for later use during composition
+    $METHOD_ALIASES{$caller} = $aliases_by_role;
+
+    my $roles_str = join ', ', map { "'$_'" } @$clean_roles_ref;
+
     my $init_code = qq{
         package $caller;
-        INIT { Role::_apply_roles('$caller', qw(@roles)); }
+
+        # CRITICAL FIX: Using BEGIN to ensure composition runs before methods are called.
+        BEGIN { Role::_apply_roles('$caller', $roles_str); }
         1;
     };
 
     eval $init_code or die "Failed to set up role application: $@";
 }
 
+# Updated to support a list of roles or a hashref for roles with aliases
 sub _setup_role_application {
     my ($caller, @roles) = @_;
 
+    my ($clean_roles_ref, $aliases_by_role) = _process_role_arguments(@roles);
+
+    $METHOD_ALIASES{$caller} = $aliases_by_role;
+
+    my $roles_str = join ', ', map { "'$_'" } @$clean_roles_ref;
+
     my $init_code = qq{
         package $caller;
-        INIT { Role::_apply_roles('$caller', qw(@roles)); }
+
+        # CRITICAL FIX: Using BEGIN to ensure composition runs before methods are called.
+        BEGIN { Role::_apply_roles('$caller', $roles_str); }
         1;
     };
     eval $init_code or die "Failed to set up role application: $@";
+}
+
+# Helper to process role arguments (accepts role names or { role => 'Name', alias => { ... } })
+sub _process_role_arguments {
+    my (@args) = @_;
+    my @roles;
+    my %aliases_by_role;
+
+    foreach my $arg (@args) {
+        if (ref $arg eq 'HASH' && $arg->{role}) {
+            my $role = $arg->{role};
+            push @roles, $role;
+            if ($arg->{alias} && ref $arg->{alias} eq 'HASH') {
+                $aliases_by_role{$role} = $arg->{alias};
+            }
+        } else {
+            push @roles, $arg;
+        }
+    }
+
+    return \@roles, \%aliases_by_role;
 }
 
 sub requires {
@@ -352,7 +396,7 @@ sub _apply_role {
         }
     }
 
-    # Validate required methods with better error reporting
+    # Validate required methods
     my @missing;
     my $required = $REQUIRED_METHODS{$role} || [];
     foreach my $method (@$required) {
@@ -367,6 +411,10 @@ sub _apply_role {
             "Implement these methods in $class to use role $role";
     }
 
+    # Get aliases for this role in this class
+    my $aliases_for_role = $METHOD_ALIASES{$class}->{$role} || {};
+    my %reverse_aliases = reverse %$aliases_for_role; # alias_method => original_method
+
     # Detect method conflicts (excluding special Role package methods)
     no strict 'refs';
     my $role_stash = \%{"${role}::"};
@@ -375,41 +423,76 @@ sub _apply_role {
     foreach my $name (keys %$role_stash) {
         # Skip Role package internal methods and special methods
         next if $name =~ /^(BEGIN|END|import|DESTROY|new|requires|excludes|IS_ROLE|with)$/;
-        next if $name eq 'does';  # Skip 'does' method as it's added by Role system
+        next if $name eq 'does';
 
         my $glob = $role_stash->{$name};
-        if (defined *{$glob}{CODE} && $class->can($name)) {
+
+        # Only check for code subs
+        next unless defined *{$glob}{CODE};
+
+        # Find the method name that will be installed (either original or alias)
+        my $install_name = $aliases_for_role->{$name} || $name;
+
+        if ($class->can($install_name)) {
             # Only conflict if method doesn't come from the same role (already composed)
-            my $origin = _find_method_origin($class, $name);
-            unless ($origin eq $role) {
-                push @conflicts, {
-                    method => $name,
-                    from_role => $origin,
-                    to_role => $role
-                };
+            my $origin = _find_method_origin($class, $install_name);
+
+            # Check if the conflicting method is one we're aliasing *to*
+            # or if it's the original method we're trying to install without an alias
+            my $is_original_conflict = ($install_name eq $name) && ($origin ne $role);
+            my $is_alias_conflict    = ($install_name ne $name) && ($origin ne $role);
+
+            if ($is_original_conflict || $is_alias_conflict) {
+
+                # If a method is aliased, the conflict is only fatal if the alias target
+                # already exists and is not from this role.
+                if ($is_original_conflict) {
+                    push @conflicts, {
+                        method => $name,
+                        from_role => $origin,
+                        to_role => $role,
+                        aliased => 0,
+                    };
+                } elsif ($is_alias_conflict) {
+                    # Conflict on the alias name, but not the original name
+                    push @conflicts, {
+                        method => $name,
+                        alias => $install_name,
+                        from_role => $origin,
+                        to_role => $role,
+                        aliased => 1,
+                    };
+                }
             }
         }
     }
 
     if (@conflicts) {
-        my $conflict_list = join ', ', map {
-            "$_->{method} (conflict between $_->{from_role} and $_->{to_role})"
+        my $conflict_list = join "\n", map {
+            my $msg = "$_->{method}";
+            $msg .= " (aliased to $_->{alias})" if $_->{aliased};
+            $msg .= " conflicts with $_->{from_role} when composing $_->{to_role}";
+            $msg
         } @conflicts;
-        die "Method conflict(s) when applying role '$role' to class '$class': $conflict_list\n" .
-            "Consider using role exclusion or method aliasing (not supported in this version)";
+        die "Method conflict(s) when applying role '$role' to class '$class':\n$conflict_list\n" .
+            "Resolve by using role exclusion or providing an alias for the conflicting method.";
     }
 
     # Apply the role methods (excluding Role package methods)
     foreach my $name (keys %$role_stash) {
         # Skip Role package internal methods
         next if $name =~ /^(BEGIN|END|import|DESTROY|new|requires|excludes|IS_ROLE|with)$/;
-        next if $name eq 'does';  # Skip 'does' method
+        next if $name eq 'does';
 
         my $glob = $role_stash->{$name};
-        if (defined *{$glob}{CODE}) {
-            no warnings 'redefine';
-            *{"${class}::${name}"} = *{$glob}{CODE};
-        }
+
+        # Only apply code subs
+        next unless defined *{$glob}{CODE};
+
+        my $install_name = $aliases_for_role->{$name} || $name;
+
+        no warnings 'redefine';
+        *{"${class}::${install_name}"} = *{$glob}{CODE};
     }
 
     # Add to inheritance chain if not already there
@@ -428,7 +511,15 @@ sub _find_method_origin {
     # Check if method comes from any applied role
     if ($APPLIED_ROLES{$class}) {
         foreach my $role (@{$APPLIED_ROLES{$class}}) {
-            if ($role->can($method)) {
+            # Need to check if $method is the original name OR an alias name for this role
+            my $aliases = $METHOD_ALIASES{$class}->{$role} || {};
+            my %reverse_aliases = reverse %$aliases;
+
+            my $original_name = $reverse_aliases{$method} || $method;
+
+            # Check if the role defines the *original* method name or if the method
+            # is the *alias* we installed from this role.
+            if ($role->can($original_name) || exists $reverse_aliases{$method}) {
                 return $role;
             }
         }
@@ -480,7 +571,15 @@ sub apply_role {
     # Handle both class names and instances
     my $target_class = ref($class) ? ref($class) : $class;
 
-    foreach my $role (@roles) {
+    my ($clean_roles_ref, $aliases_by_role) = _process_role_arguments(@roles);
+
+    # Merge or overwrite existing aliases
+    $METHOD_ALIASES{$target_class} = {
+        %{$METHOD_ALIASES{$target_class} || {}},
+        %$aliases_by_role
+    };
+
+    foreach my $role (@$clean_roles_ref) {
         _apply_role($target_class, $role);
     }
     _add_does_method($target_class);
