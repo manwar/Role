@@ -1,6 +1,6 @@
 package Role;
 
-$Role::VERSION   = '0.01';
+$Role::VERSION    = '0.02';
 $Role::AUTHORITY = 'cpan:MANWAR';
 
 =head1 NAME
@@ -9,7 +9,7 @@ Role - A lightweight role composition system for Perl
 
 =head1 VERSION
 
-Version 0.01
+Version 0.02
 
 =cut
 
@@ -55,14 +55,17 @@ Quick role definition and consumption:
     my $user = User->new(123, 'Alice');
     $user->log('User logged in');  # Works!
 
-Alternative syntax with C<with>:
+Alternative syntax with C<with> and **Method Aliasing** for conflict resolution:
 
     package Product {
         use Role;
-        with 'Loggable', 'Serializable';
+        with 'Loggable',
+            {
+                role => 'ConflictingRole',
+                alias => { common_method => 'product_method' }
+            };
 
         sub get_id { $_[0]->{sku} }
-        sub serialize { ... }
     }
 
 Runtime role application:
@@ -117,12 +120,19 @@ Roles can declare incompatible roles:
         excludes 'RoleB';  # Cannot be composed with RoleB
     }
 
-=item * Method Conflict Detection
+=item * Method Conflict Detection **(Automatic Resolution)**
 
-Automatic detection of method naming conflicts:
+Automatic detection and **resolution** of method naming conflicts. When a method
+is composed, if the consuming class or any previously composed role already
+provides a method with the same name, the **existing method takes precedence**
+and the role method is silently discarded.
 
-    # Throws: "Method conflict(s) when applying role 'RoleB' to class 'MyClass':
-    #          method_name (conflict between RoleA and RoleB)"
+=item * **Method Aliasing / Renaming**
+
+Methods from a role can be renamed during composition to resolve conflicts that would otherwise be resolved automatically by precedence. Use this if you need to retain the functionality of a lower-precedence role method. Pass a hashref to C<use Role> or C<with> instead of the role name:
+
+    # Example: Rename 'run' from WorkerRole to 'worker_run'
+    use Role { role => 'WorkerRole', alias => { run => 'worker_run' } };
 
 =item * Runtime Role Application
 
@@ -166,10 +176,6 @@ I<not> implemented:
 
 =over 4
 
-=item * Automatic Method Conflict Resolution
-
-When methods conflict, you must resolve them manually by overriding in the class.
-
 =item * Attribute Composition
 
 Only method composition is supported; role attributes are not handled.
@@ -177,10 +183,6 @@ Only method composition is supported; role attributes are not handled.
 =item * Method Modifiers
 
 No C<before>, C<after>, or C<around> method modifiers.
-
-=item * Method Aliasing or Renaming
-
-Cannot alias or rename methods during composition.
 
 =item * Role Versioning
 
@@ -220,9 +222,13 @@ The following function is exported into packages that consume roles:
 
 =head3 with
 
-    with 'Role1', 'Role2';
+    with 'Role1',
+        {
+            role => 'Role2',
+            alias => { old_name => 'new_name' }
+        };
 
-Alternative syntax for applying multiple roles.
+Alternative syntax for applying multiple roles, supporting method aliasing for conflict resolution.
 
 =head1 CLASS METHODS
 
@@ -230,7 +236,9 @@ Alternative syntax for applying multiple roles.
 
     Role::apply_role($class_or_object, @roles);
 
-Apply one or more roles to a class or object at runtime.
+Apply one or more roles to a class or object at runtime. Supports aliasing by passing a hashref for the role argument:
+
+    Role::apply_role('MyClass', { role => 'Conflicting', alias => { run => 'conflicting_run' } });
 
 =head2 get_applied_roles
 
@@ -413,15 +421,20 @@ sub _apply_role {
 
     # Get aliases for this role in this class
     my $aliases_for_role = $METHOD_ALIASES{$class}->{$role} || {};
-    my %reverse_aliases = reverse %$aliases_for_role; # alias_method => original_method
+    # Reverse aliases are not strictly needed here, but kept for clarity/debugging.
+    # my %reverse_aliases = reverse %$aliases_for_role;
 
     # Detect method conflicts (excluding special Role package methods)
     no strict 'refs';
     my $role_stash = \%{"${role}::"};
     my @conflicts;
 
+    # We now only detect and die on a FATAL CONFLICT:
+    # Attempting to alias a method to an existing name.
+    # Standard name conflicts are resolved automatically below.
+
     foreach my $name (keys %$role_stash) {
-        # Skip Role package internal methods and special methods
+        # Skip internal methods
         next if $name =~ /^(BEGIN|END|import|DESTROY|new|requires|excludes|IS_ROLE|with)$/;
         next if $name eq 'does';
 
@@ -433,36 +446,20 @@ sub _apply_role {
         # Find the method name that will be installed (either original or alias)
         my $install_name = $aliases_for_role->{$name} || $name;
 
-        if ($class->can($install_name)) {
-            # Only conflict if method doesn't come from the same role (already composed)
+        # Check for FATAL ALIAS CONFLICT:
+        # If an alias is defined AND the target name already exists (and is not from this role itself).
+        if ($install_name ne $name && $class->can($install_name)) {
             my $origin = _find_method_origin($class, $install_name);
 
-            # Check if the conflicting method is one we're aliasing *to*
-            # or if it's the original method we're trying to install without an alias
-            my $is_original_conflict = ($install_name eq $name) && ($origin ne $role);
-            my $is_alias_conflict    = ($install_name ne $name) && ($origin ne $role);
-
-            if ($is_original_conflict || $is_alias_conflict) {
-
-                # If a method is aliased, the conflict is only fatal if the alias target
-                # already exists and is not from this role.
-                if ($is_original_conflict) {
-                    push @conflicts, {
-                        method => $name,
-                        from_role => $origin,
-                        to_role => $role,
-                        aliased => 0,
-                    };
-                } elsif ($is_alias_conflict) {
-                    # Conflict on the alias name, but not the original name
-                    push @conflicts, {
-                        method => $name,
-                        alias => $install_name,
-                        from_role => $origin,
-                        to_role => $role,
-                        aliased => 1,
-                    };
-                }
+            # If the alias target exists and didn't come from this role, it's a fatal conflict.
+            if ($origin ne $role) {
+                 push @conflicts, {
+                    method => $name,
+                    alias => $install_name,
+                    from_role => $origin,
+                    to_role => $role,
+                    aliased => 1,
+                };
             }
         }
     }
@@ -475,10 +472,10 @@ sub _apply_role {
             $msg
         } @conflicts;
         die "Method conflict(s) when applying role '$role' to class '$class':\n$conflict_list\n" .
-            "Resolve by using role exclusion or providing an alias for the conflicting method.";
+            "Resolve by using role exclusion or providing a different alias.";
     }
 
-    # Apply the role methods (excluding Role package methods)
+    # Apply the role methods (including AUTOMATIC CONFLICT RESOLUTION)
     foreach my $name (keys %$role_stash) {
         # Skip Role package internal methods
         next if $name =~ /^(BEGIN|END|import|DESTROY|new|requires|excludes|IS_ROLE|with)$/;
@@ -490,6 +487,14 @@ sub _apply_role {
         next unless defined *{$glob}{CODE};
 
         my $install_name = $aliases_for_role->{$name} || $name;
+
+        # --- AUTOMATIC CONFLICT RESOLUTION ---
+        # If the class already has this method name AND we are NOT aliasing it,
+        # then an existing method (class or prior role) has precedence. SKIP IT.
+        if ($class->can($install_name) && $install_name eq $name) {
+            next;
+        }
+        # --- END RESOLUTION LOGIC ---
 
         no warnings 'redefine';
         *{"${class}::${install_name}"} = *{$glob}{CODE};
@@ -702,7 +707,7 @@ The class doesn't implement all methods required by the role.
 
 =item * C<Method conflict(s) when applying role '%s' to class '%s': %s>
 
-Multiple roles provide methods with the same name.
+**Fatal Conflict:** This only occurs when attempting to **alias a method to a name that already exists** in the class or a previously applied role. Standard method name conflicts are resolved automatically by precedence.
 
 =item * C<Role '%s' cannot be composed with role(s): %s>
 
@@ -851,7 +856,7 @@ License to you shall terminate on the date that such litigation is filed.
 
 Disclaimer  of  Warranty:  THE  PACKAGE  IS  PROVIDED BY THE COPYRIGHT HOLDER AND
 CONTRIBUTORS  "AS IS'  AND WITHOUT ANY EXPRESS OR IMPLIED WARRANTIES. THE IMPLIED
-WARRANTIES    OF   MERCHANTABILITY,   FITNESS   FOR   A   PARTICULAR  PURPOSE, OR
+WARRANTIES    OF    MERCHANTABILITY,   FITNESS   FOR   A   PARTICULAR  PURPOSE, OR
 NON-INFRINGEMENT ARE DISCLAIMED TO THE EXTENT PERMITTED BY YOUR LOCAL LAW. UNLESS
 REQUIRED BY LAW, NO COPYRIGHT HOLDER OR CONTRIBUTOR WILL BE LIABLE FOR ANY DIRECT,
 INDIRECT, INCIDENTAL,  OR CONSEQUENTIAL DAMAGES ARISING IN ANY WAY OUT OF THE USE

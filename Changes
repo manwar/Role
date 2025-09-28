@@ -1,4 +1,7 @@
 Revision history for Role
 
+0.02  2025-09-28
+      - Added features: method alias and automatic method conflict.
+
 0.01  2025-09-28
       - Module Created.
