@@ -1,5 +1,8 @@
 Revision history for Role
 
+0.04  2025-10-01
+      - Updated pod about conflict resolution.
+
 0.03  2025-10-01
       - Added Moo::Role-style conflict resolution:
          a) Class methods always win silently.

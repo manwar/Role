@@ -1,6 +1,6 @@
 package Role;
 
-$Role::VERSION    = '0.03';
+$Role::VERSION    = '0.04';
 $Role::AUTHORITY = 'cpan:MANWAR';
 
 =head1 NAME
@@ -9,7 +9,7 @@ Role - A lightweight role composition system for Perl
 
 =head1 VERSION
 
-Version 0.03
+Version 0.04
 
 =cut
 
@@ -119,19 +119,29 @@ Roles can declare incompatible roles:
         excludes 'RoleB';  # Cannot be composed with RoleB
     }
 
-=item * Method Conflict Detection **(Automatic Resolution)**
+=item * Method Conflict Detection (Moo::Role style)
 
-Automatic detection and **resolution** of method naming conflicts. When a method
-is composed, if the consuming class or any previously composed role already
-provides a method with the same name, the **existing method takes precedence**
-and the role method is silently discarded.
+Conflicting methods between roles are detected and treated as **fatal errors**.
+You must resolve them explicitly using aliasing or excludes.
 
-=item * **Method Aliasing / Renaming**
+- If the consuming class itself provides the method, the **class wins silently**.
+- If two roles both provide the same method, a conflict occurs and role application dies.
+- To keep both, alias one of the conflicting methods during composition:
 
-Methods from a role can be renamed during composition to resolve conflicts that would otherwise be resolved automatically by precedence. Use this if you need to retain the functionality of a lower-precedence role method. Pass a hashref to C<use Role> or C<with> instead of the role name:
+    use Role {
+        role  => 'SomeRole',
+        alias => { run => 'some_run' }
+    };
+
+=item * Method Aliasing / Renaming
+
+Conflicts between roles must be resolved explicitly. You can rename methods from
+a role during composition to avoid conflicts:
 
     # Example: Rename 'run' from WorkerRole to 'worker_run'
     use Role { role => 'WorkerRole', alias => { run => 'worker_run' } };
+
+Aliasing allows you to keep both role methods instead of discarding one.
 
 =item * Runtime Role Application
 
@@ -687,9 +697,15 @@ sub is_role {
 
 The class doesn't implement all methods required by the role.
 
+=item * C<Conflict: method '%s' provided by both '%s' and '%s' in class '%s'>
+
+A method conflict between two roles. Unlike older versions of Role, this is now
+a **fatal error** (Moo::Role style). Resolve by aliasing or excluding one role.
+
 =item * C<Method conflict(s) when applying role '%s' to class '%s': %s>
 
-**Fatal Conflict:** This only occurs when attempting to **alias a method to a name that already exists** in the class or a previously applied role. Standard method name conflicts are resolved automatically by precedence.
+Occurs when aliasing a method to a name that already exists in the class or
+another role. Choose a different alias to avoid collision.
 
 =item * C<Role '%s' cannot be composed with role(s): %s>
 
