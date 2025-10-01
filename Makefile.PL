@@ -20,7 +20,7 @@ WriteMakefile(
     clean => { FILES => 'Role-*' },
     (eval { ExtUtils::MakeMaker->VERSION(6.46) } ? (META_MERGE => {
         'meta-spec' => { version => 2 },
-        provides    => { 'Role'  => { file => 'lib/Role.pm', version => '0.02' } },
+        provides    => { 'Role'  => { file => 'lib/Role.pm', version => '0.03' } },
         resources   => {
             repository => {
                 type => 'git',

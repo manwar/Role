@@ -211,7 +211,7 @@ END_PACKAGE
     } qr/requires method.*that are missing/, "Required methods are properly validated";
 }
 
-# Test 10: Automatic Method Conflict Resolution (formerly Test 42)
+# Test 10: Role vs Role Method Conflict (Moo::Role-style behavior)
 {
     reset_role_system();
 
@@ -227,25 +227,16 @@ END_PACKAGE
 
     package main;
 
-    # 1. Composition should now LIVE, as the conflict is automatically resolved
+    # 1. First role applies fine
     lives_ok {
         Role::apply_role('TestClassConflict', 'ConflictRoleA');
+    } "First role applies";
+
+    # 2. Second role should now DIE with a conflict error
+    throws_ok {
         Role::apply_role('TestClassConflict', 'ConflictRoleB');
-    } "Automatic method conflict resolution succeeds";
-
-    my $obj = bless {}, 'TestClassConflict';
-
-    # 2. Check that the first applied role (A) takes precedence over the second (B)
-    is($obj->conflicting_method(), "FROM_A",
-        "Existing method (FROM_A) takes precedence over new conflicting method (FROM_B)");
+    } qr/Conflict: method 'conflicting_method' provided by both/,
+       "Role vs Role method conflict is fatal like Moo::Role";
 }
-
-# Note: The original test file had 42 subtests. Since we only have 10 blocks
-# defined here, I will adjust the final count to reflect the 10 blocks * (subtests per block).
-# Assuming the first 9 blocks had 3 tests each (1+2+3+2+2+2+3+4+1 = 20 tests) +
-# Test 1 (1 test) = 21 tests, and the final block has 2 tests.
-# Total subtests = 23 (approx, based on typical block size).
-# Since we can't know the exact count of the original 42, we'll rely on done_testing()
-# to count the actual number of tests executed here (23 tests).
 
 done_testing;

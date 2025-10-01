@@ -1,5 +1,10 @@
 Revision history for Role
 
+0.03  2025-10-01
+      - Added Moo::Role-style conflict resolution:
+         a) Class methods always win silently.
+         b) Role vs Role conflicts die unless resolved with aliasing.
+
 0.02  2025-09-28
       - Added features: method alias and automatic method conflict.
 

@@ -1,6 +1,6 @@
 package Role;
 
-$Role::VERSION    = '0.02';
+$Role::VERSION    = '0.03';
 $Role::AUTHORITY = 'cpan:MANWAR';
 
 =head1 NAME
@@ -9,7 +9,7 @@ Role - A lightweight role composition system for Perl
 
 =head1 VERSION
 
-Version 0.02
+Version 0.03
 
 =cut
 
@@ -20,7 +20,6 @@ my %REQUIRED_METHODS;
 my %IS_ROLE;
 my %EXCLUDED_ROLES;
 my %APPLIED_ROLES;
-# Store method aliases for applied roles: $METHOD_ALIASES{Class}{Role} = { original_method => alias_method, ... }
 my %METHOD_ALIASES;
 
 =head1 SYNOPSIS
@@ -288,7 +287,6 @@ sub _export_with {
     *{"${caller}::with"} = \&with unless (defined &{"${caller}::with"});
 }
 
-# Updated to support a list of roles or a hashref for roles with aliases
 sub with {
     my (@roles) = @_;
 
@@ -313,7 +311,6 @@ sub with {
     eval $init_code or die "Failed to set up role application: $@";
 }
 
-# Updated to support a list of roles or a hashref for roles with aliases
 sub _setup_role_application {
     my ($caller, @roles) = @_;
 
@@ -412,7 +409,6 @@ sub _apply_role {
             push @missing, $method;
         }
     }
-
     if (@missing) {
         die "Role '$role' requires method(s) that are missing in class '$class': " .
             join(', ', @missing) . "\n" .
@@ -421,49 +417,32 @@ sub _apply_role {
 
     # Get aliases for this role in this class
     my $aliases_for_role = $METHOD_ALIASES{$class}->{$role} || {};
-    # Reverse aliases are not strictly needed here, but kept for clarity/debugging.
-    # my %reverse_aliases = reverse %$aliases_for_role;
 
-    # Detect method conflicts (excluding special Role package methods)
+    # Detect alias conflicts (already in your design)
     no strict 'refs';
     my $role_stash = \%{"${role}::"};
     my @conflicts;
-
-    # We now only detect and die on a FATAL CONFLICT:
-    # Attempting to alias a method to an existing name.
-    # Standard name conflicts are resolved automatically below.
-
     foreach my $name (keys %$role_stash) {
-        # Skip internal methods
         next if $name =~ /^(BEGIN|END|import|DESTROY|new|requires|excludes|IS_ROLE|with)$/;
         next if $name eq 'does';
-
         my $glob = $role_stash->{$name};
-
-        # Only check for code subs
         next unless defined *{$glob}{CODE};
 
-        # Find the method name that will be installed (either original or alias)
         my $install_name = $aliases_for_role->{$name} || $name;
 
-        # Check for FATAL ALIAS CONFLICT:
-        # If an alias is defined AND the target name already exists (and is not from this role itself).
         if ($install_name ne $name && $class->can($install_name)) {
             my $origin = _find_method_origin($class, $install_name);
-
-            # If the alias target exists and didn't come from this role, it's a fatal conflict.
             if ($origin ne $role) {
-                 push @conflicts, {
-                    method => $name,
-                    alias => $install_name,
+                push @conflicts, {
+                    method    => $name,
+                    alias     => $install_name,
                     from_role => $origin,
-                    to_role => $role,
-                    aliased => 1,
+                    to_role   => $role,
+                    aliased   => 1,
                 };
             }
         }
     }
-
     if (@conflicts) {
         my $conflict_list = join "\n", map {
             my $msg = "$_->{method}";
@@ -475,26 +454,29 @@ sub _apply_role {
             "Resolve by using role exclusion or providing a different alias.";
     }
 
-    # Apply the role methods (including AUTOMATIC CONFLICT RESOLUTION)
+    # Apply the role methods (Moo::Role style conflict rules)
     foreach my $name (keys %$role_stash) {
-        # Skip Role package internal methods
         next if $name =~ /^(BEGIN|END|import|DESTROY|new|requires|excludes|IS_ROLE|with)$/;
         next if $name eq 'does';
-
         my $glob = $role_stash->{$name};
-
-        # Only apply code subs
         next unless defined *{$glob}{CODE};
 
         my $install_name = $aliases_for_role->{$name} || $name;
 
-        # --- AUTOMATIC CONFLICT RESOLUTION ---
-        # If the class already has this method name AND we are NOT aliasing it,
-        # then an existing method (class or prior role) has precedence. SKIP IT.
-        if ($class->can($install_name) && $install_name eq $name) {
-            next;
+        if ($class->can($install_name)) {
+            my $origin = _find_method_origin($class, $install_name);
+
+            if ($origin eq $class) {
+                # Class method wins silently
+                next;
+            }
+            elsif ($origin ne $role) {
+                # Conflict with another role → fatal (Moo::Role behavior)
+                die "Conflict: method '$install_name' provided by both '$origin' and '$role' in class '$class'.\n"
+                  . "Use aliasing or excludes to resolve.";
+            }
+            # else: origin == $role (reinstalling same role’s method) → allow
         }
-        # --- END RESOLUTION LOGIC ---
 
         no warnings 'redefine';
         *{"${class}::${install_name}"} = *{$glob}{CODE};

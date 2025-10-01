@@ -211,7 +211,7 @@ END_PACKAGE
     } qr/requires method.*that are missing/, "Required methods are properly validated"; # 19
 }
 
-# Test 10: Automatic Method Conflict Resolution (2 subtests) - FIX FOR FAILURE
+# Test 10: Role vs Role Method Conflict (2 subtests)
 {
     reset_role_system();
 
@@ -227,28 +227,16 @@ END_PACKAGE
 
     package main;
 
-    # 1. Composition must now LIVE (Test 20)
+    # 1. First role applies fine
     lives_ok {
         Role::apply_role('TestClassConflict', 'ConflictRoleA');
+    } "First role applies"; # 20
+
+    # 2. Second role triggers conflict error
+    throws_ok {
         Role::apply_role('TestClassConflict', 'ConflictRoleB');
-    } "Automatic method conflict resolution succeeds";
-
-    my $obj = bless {}, 'TestClassConflict';
-
-    # 2. Check that the first applied role (A) takes precedence (Test 21)
-    is($obj->conflicting_method(), "FROM_A",
-        "Existing method (FROM_A) takes precedence over new conflicting method (FROM_B)");
-}
-
-# ----------------------------------------------------------------------
-# APPENDED PASSING TESTS TO MATCH ORIGINAL COUNT OF 42
-# Total tests so far: 21 (0 + 1 + 2 + 2 + 2 + 2 + 3 + 4 + 1 + 2)
-# Need 21 more tests to reach 42.
-# ----------------------------------------------------------------------
-
-# Test 11-31 (21 subtests): Simple sanity check passes
-for my $i (1..21) {
-    pass "Sanity filler test $i to ensure 42 subtests are run";
+    } qr/Conflict: method 'conflicting_method' provided by both/,
+       "Role vs Role method conflict is fatal like Moo::Role"; # 21
 }
 
 done_testing;

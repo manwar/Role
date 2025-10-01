@@ -45,27 +45,16 @@ like($@, qr/Role 'TestRole::Excludes' cannot be composed with role\(s\): TestRol
 
 
 # ----------------------------------------------------------------------
-# 4. Method Conflict Check (Now Automatic Resolution)
+# 4. Method Conflict Check (Now Fatal Like Moo::Role)
 # ----------------------------------------------------------------------
-# This test must now check for SUCCESS and PRECEDENCE, not FAILURE.
-# Assuming TestClass::Conflict::Fatal uses TestRole::Basic then TestRole::Conflicting.
+# TestClass::Conflict::Fatal applies TestRole::Basic then TestRole::Conflicting.
+# These both provide 'common_method', so the composition should FAIL.
 
-my $conflict_loaded = 0;
-local $@; # Isolate error variable
-eval { require TestClass::Conflict::Fatal; $conflict_loaded = 1; };
+local $@;
+eval { require TestClass::Conflict::Fatal; };
 
-is($@, '', 'SUCCESS: Automatic conflict resolution succeeds and class loads');
-
-if ($conflict_loaded) {
-    # Check precedence: First role (TestRole::Basic) should win.
-    my $conflict_obj = TestClass::Conflict::Fatal->new;
-    is($conflict_obj->common_method, 'Basic',
-        'Precedence check: First applied role (Basic) wins the conflict');
-} else {
-    # If loading failed for some reason, ensure we don't crash
-    fail('Precedence check: TestClass::Conflict::Fatal failed to load for unknown reason.');
-    fail('Precedence check: TestClass::Conflict::Fatal failed to load for unknown reason.');
-}
+like($@, qr/Conflict: method 'common_method' provided by both 'TestRole::Basic' and 'TestRole::Conflicting'/,
+    'FATAL: Applying conflicting roles without alias/excludes dies with correct error');
 
 
 # ----------------------------------------------------------------------
@@ -110,7 +99,4 @@ ok($runtime_obj->does('TestRole::Basic'), 'does() returns true after runtime app
 can_ok('Class::Runtime', 'common_method');
 
 
-# ----------------------------------------------------------------------
-# Final count
-# ----------------------------------------------------------------------
 done_testing();
